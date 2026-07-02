@@ -8,8 +8,8 @@ import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate one random-rotation GT JSON file.")
-    parser.add_argument("--input-dir", type=Path, default=Path("input"))
-    parser.add_argument("--gt-json", type=Path, default=Path("gt/ground_truth.json"))
+    parser.add_argument("--input-dir", type=Path, default=Path("data/input"))
+    parser.add_argument("--gt-json", type=Path, default=Path("data/gt/ground_truth.json"))
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 

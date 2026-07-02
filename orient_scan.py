@@ -1,16 +1,20 @@
 import argparse
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import torch
 
-from scan_inference import load_normalizer, normalize_scan
+from scannormalizer.scan_inference import load_normalizer, normalize_scan
 
-# checkpoint /homes/mlugli/ScanNormalizer/exp/rotation/20260618_093503/best.pt
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Orient one scan with a trained normalizer.")
     parser.add_argument("scan", type=Path)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--output-dir", default="data/output")
     parser.add_argument("--points", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()

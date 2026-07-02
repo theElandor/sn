@@ -1,23 +1,27 @@
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import wandb
 
-from dataset import ScanDataset
-from eval_visualization import build_eval_visualizations
-from evaluate import run_evaluation
-from model import RotationNormalizer
+from scannormalizer.dataset import ScanDataset
+from scannormalizer.eval_visualization import build_eval_visualizations
+from scannormalizer.evaluate import run_evaluation
+from scannormalizer.model import RotationNormalizer
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a scan rotation normalizer.")
     parser.add_argument("--data-root", required=True, help="Directory containing scan meshes.")
     parser.add_argument("--fold-dir", required=True, help="Directory containing train.txt and val.txt.")
-    parser.add_argument("--output-dir", default="exp/rotation", help="Root for per-run outputs.")
+    parser.add_argument("--output-dir", default="runs/rotation", help="Root for per-run outputs.")
     parser.add_argument("--points", type=int, default=16000, help="Points sampled per scan.")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -26,9 +30,9 @@ def parse_args():
     parser.add_argument("--sampling", choices=("random", "fps"), default="fps")
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--eval-input-dir", default="input")
+    parser.add_argument("--eval-input-dir", default="data/input")
     parser.add_argument("--eval-split-file", default=None)
-    parser.add_argument("--eval-gt-json", default="gt/ground_truth.json")
+    parser.add_argument("--eval-gt-json", default="data/gt/ground_truth.json")
     parser.add_argument("--eval-sampling", choices=("random", "fps"), default="fps")
     parser.add_argument("--eval-points", type=int, default=None)
     parser.add_argument("--eval-visualize-count", type=int, default=5)
@@ -42,6 +46,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    model = RotationNormalizer().to(args.device)
+    model_parameters = sum(parameter.numel() for parameter in model.parameters())
+    print(f"model parameters {model_parameters:,}", flush=True)
+
     run_dir = create_run_dir(Path(args.output_dir), args.wandb_name)
     data_root = Path(args.data_root).expanduser()
     fold_dir = Path(args.fold_dir).expanduser()
@@ -92,7 +100,6 @@ def main():
         pin_memory=True,
     )
 
-    model = RotationNormalizer().to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_val = float("inf")
 

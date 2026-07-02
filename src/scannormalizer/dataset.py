@@ -8,7 +8,7 @@ import torch
 import trimesh
 from torch.utils.data import Dataset
 
-from model import ROTATION_CLASS_MATRICES
+from .model import ROTATION_CLASS_MATRICES
 
 
 MESH_EXTENSIONS = {".stl", ".ply", ".obj", ".off"}

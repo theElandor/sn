@@ -5,8 +5,8 @@ import numpy as np
 import torch
 import trimesh
 
-from dataset import farthest_point_sample, normalize_points, pca_orient_points, random_point_sample
-from model import RotationNormalizer
+from .dataset import farthest_point_sample, normalize_points, pca_orient_points, random_point_sample
+from .model import RotationNormalizer
 
 
 @dataclass
@@ -36,7 +36,7 @@ class MatrixPrediction:
 def load_normalizer(checkpoint_path, device=None, points=None, sampling="fps"):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    sample_count = points or checkpoint.get("points", 16000)
+    sample_count = points or checkpoint.get("points")
 
     model = RotationNormalizer().to(device)
     model.load_state_dict(checkpoint["model"])

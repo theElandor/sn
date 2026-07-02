@@ -1,19 +1,24 @@
 import argparse
 import math
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
 import numpy as np
 import torch
 import trimesh
 
-from scan_inference import load_normalizer, normalize_scan
+from scannormalizer.scan_inference import load_normalizer, normalize_scan
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Orient every STL scan under an input directory and render QA plots."
     )
-    parser.add_argument("--input-dir", type=Path, default=Path("input"))
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    parser.add_argument("--input-dir", type=Path, default=Path("data/input"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/output"))
     parser.add_argument("--checkpoint")
     parser.add_argument("--points", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

@@ -6,16 +6,16 @@
 #SBATCH --gres=gpu:1
 #SBATCH --account=grana_maxillo
 #SBATCH --partition=all_usr_prod
-#SBATCH --time=1:00:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=20GB
-#SBATCH --output=logs/inference_%j.out
-#SBATCH --error=logs/inference_%j.err
+#SBATCH --output=runs/logs/train_%j.out
+#SBATCH --error=runs/logs/train_%j.err
 
-source venv/bin/activate
-python train.py --data-root  input \
+source /home/mlugli/ScanNormalizer/venv/bin/activate
+python scripts/train.py --data-root data/input \
     --sampling fps \
-    --points 4096 \
+    --points 16384 \
     --epochs 3 \
     --batch-size 4 \
-    --fold-dir splits/fold_2 \
+    --fold-dir data/splits/fold_2 \
     --output-dir exp/rotation

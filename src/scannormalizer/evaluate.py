@@ -3,8 +3,8 @@ from pathlib import Path
 
 import torch
 
-from geodesic_loss import GeodesicLoss
-from scan_inference import Normalizer, predict_normalization_matrix
+from .geodesic_loss import GeodesicLoss
+from .scan_inference import Normalizer, predict_normalization_matrix
 
 
 def run_evaluation(

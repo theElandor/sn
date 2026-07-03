@@ -56,10 +56,28 @@ Orient one scan:
 python orient_scan.py /path/to/scan.stl --checkpoint runs/rotation/best.pt --output-dir data/output
 ```
 
+Add `--orient-only` to keep the output in the original scan scale instead of centering and scaling it to the unit sphere:
+
+```bash
+python orient_scan.py /path/to/scan.stl --checkpoint runs/rotation/best.pt --output-dir data/output --orient-only
+```
+
+For paired lower/upper scans in one patient folder, add `--preserve-occlusion`. The model is run only on the lower scan, then the same transform is applied to the sibling upper scan. Lower scans are detected by filenames containing `lower` or `mandibular`; upper scans are detected by filenames containing `upper` or `maxillary`, case-insensitively:
+
+```bash
+python orient_scan.py /path/to/patient --checkpoint runs/rotation/best.pt --output-dir data/output --preserve-occlusion
+```
+
 Orient a full input directory while preserving patient subfolders:
 
 ```bash
 python scripts/batch_orient_scans.py --input-dir data/input --output-dir data/output --checkpoint runs/rotation/best.pt
+```
+
+For patient folders that contain paired lower/upper scans, preserve occlusion by inferring the transform from the lower scan only and applying it to both scans. Lower scans are detected by filenames containing `lower` or `mandibular`; upper scans are detected by filenames containing `upper` or `maxillary`, case-insensitively:
+
+```bash
+python scripts/batch_orient_scans.py --input-dir data/input --output-dir data/output --checkpoint runs/rotation/best.pt --preserve-occlusion
 ```
 
 The batch script writes oriented STL files under the same relative paths in `data/output/` and saves quick visual QA sheets under `data/output/qa/`. By default each QA image contains up to 10 scans with X/Y/Z axes drawn in red/green/blue.

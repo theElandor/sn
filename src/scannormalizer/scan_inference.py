@@ -23,6 +23,8 @@ class NormalizationResult:
     rotation_index: int
     logits: list[float]
     matrix: list[list[float]]
+    center: list[float]
+    scale: float
     pca_output_path: Path | None = None
 
 
@@ -50,23 +52,33 @@ def load_normalizer(checkpoint_path, device=None, points=None, sampling="fps"):
     )
 
 
-def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None):
+def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None, orient_only=False):
     scan_path = Path(scan_path)
     output_path = Path(output_path)
     pca_output_path = Path(pca_output_path) if pca_output_path is not None else None
 
     inference = _run_inference(scan_path, normalizer)
     mesh = inference["mesh"]
-    pca_vertices = inference["pca_vertices"]
-    rotation = inference["rotation"]
 
     if pca_output_path is not None:
         pca_output_path.parent.mkdir(parents=True, exist_ok=True)
         pca_mesh = mesh.copy()
-        pca_mesh.vertices = pca_vertices.numpy()
+        pca_mesh.vertices = _apply_transform(
+            inference["points"],
+            inference["basis"],
+            inference["center"],
+            inference["scale"],
+            orient_only,
+        ).numpy()
         pca_mesh.export(pca_output_path)
 
-    oriented_vertices = pca_vertices @ rotation.T
+    oriented_vertices = _apply_transform(
+        inference["points"],
+        inference["matrix"],
+        inference["center"],
+        inference["scale"],
+        orient_only,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.vertices = oriented_vertices.numpy()
     mesh.export(output_path)
@@ -76,8 +88,30 @@ def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None):
         rotation_index=inference["rotation_index"],
         logits=inference["logits"].tolist(),
         matrix=inference["matrix"].tolist(),
+        center=inference["center"].tolist(),
+        scale=float(inference["scale"].item()),
         pca_output_path=pca_output_path,
     )
+
+
+def transform_scan(scan_path, output_path, matrix, center=None, scale=None, orient_only=False):
+    scan_path = Path(scan_path)
+    output_path = Path(output_path)
+    mesh = trimesh.load(scan_path, force="mesh", process=False)
+    vertices = np.asarray(mesh.vertices, dtype=np.float32)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
+        raise RuntimeError(f"Could not load vertices from {scan_path}")
+
+    points = torch.from_numpy(vertices)
+    matrix = torch.as_tensor(matrix, dtype=points.dtype)
+    center = torch.as_tensor(center, dtype=points.dtype) if center is not None else None
+    scale = torch.as_tensor(scale, dtype=points.dtype) if scale is not None else None
+    transformed_vertices = _apply_transform(points, matrix, center, scale, orient_only)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.vertices = transformed_vertices.numpy()
+    mesh.export(output_path)
+    return output_path
 
 
 def predict_normalization_matrix(scan_path, normalizer, input_rotation=None):
@@ -121,9 +155,21 @@ def _run_inference(scan_path, normalizer, input_rotation=None):
 
     return {
         "mesh": mesh,
+        "points": points,
         "pca_vertices": pca_vertices,
+        "basis": basis,
         "rotation": rotation,
         "matrix": matrix,
+        "center": center,
+        "scale": scale,
         "rotation_index": rotation_index,
         "logits": logits,
     }
+
+
+def _apply_transform(points, matrix, center=None, scale=None, orient_only=False):
+    if orient_only:
+        return points @ matrix
+    if center is None or scale is None:
+        raise RuntimeError("center and scale are required unless orient_only=True")
+    return ((points - center) / scale) @ matrix

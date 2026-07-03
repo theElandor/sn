@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import trimesh
 
-from scannormalizer.scan_inference import load_normalizer, normalize_scan
+from scannormalizer.scan_inference import load_normalizer, normalize_scan, transform_scan
 
 
 def parse_args():
@@ -23,6 +23,16 @@ def parse_args():
     parser.add_argument("--points", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--sampling", choices=("fps", "random"), default="fps")
+    parser.add_argument(
+        "--orient-only",
+        action="store_true",
+        help="Apply only the predicted orientation matrix to output scans; do not center or scale them to the unit sphere.",
+    )
+    parser.add_argument(
+        "--preserve-occlusion",
+        action="store_true",
+        help="Infer the transform from each patient lower.stl and apply the same transform to the sibling upper.stl.",
+    )
     parser.add_argument("--plot-only", action="store_true")
     parser.add_argument("--plots-per-image", type=int, default=40)
     parser.add_argument("--render-mode", choices=("surface", "points"), default="points")
@@ -57,9 +67,7 @@ def main():
     if args.checkpoint is None:
         raise RuntimeError("--checkpoint is required unless --plot-only is used")
 
-    scans = sorted(
-        path for path in input_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".stl"
-    )
+    scans = find_stl_files(input_dir)
     if not scans:
         raise RuntimeError(f"No STL scans found under {input_dir}")
 
@@ -71,20 +79,49 @@ def main():
     )
 
     output_paths = []
-    for index, scan_path in enumerate(scans, start=1):
-        relative_path = scan_path.relative_to(input_dir)
-        output_path = output_dir / relative_path
-        result = normalize_scan(
-            scan_path,
-            output_path,
-            normalizer,
-        )
-        output_paths.append(output_path)
-        print(
-            f"[{index}/{len(scans)}] {relative_path} -> {output_path.relative_to(output_dir)} "
-            f"| rotation_class {result.rotation_index}",
-            flush=True,
-        )
+    if args.preserve_occlusion:
+        pairs = find_occlusion_pairs(scans)
+        for index, (patient_dir, lower_path, upper_path) in enumerate(pairs, start=1):
+            lower_relative_path = lower_path.relative_to(input_dir)
+            upper_relative_path = upper_path.relative_to(input_dir)
+            lower_output_path = output_dir / lower_relative_path
+            upper_output_path = output_dir / upper_relative_path
+            result = normalize_scan(
+                lower_path,
+                lower_output_path,
+                normalizer,
+                orient_only=args.orient_only,
+            )
+            transform_scan(
+                upper_path,
+                upper_output_path,
+                result.matrix,
+                center=result.center,
+                scale=result.scale,
+                orient_only=args.orient_only,
+            )
+            output_paths.extend([lower_output_path, upper_output_path])
+            print(
+                f"[{index}/{len(pairs)}] {patient_dir.relative_to(input_dir)} lower+upper "
+                f"| rotation_class {result.rotation_index}",
+                flush=True,
+            )
+    else:
+        for index, scan_path in enumerate(scans, start=1):
+            relative_path = scan_path.relative_to(input_dir)
+            output_path = output_dir / relative_path
+            result = normalize_scan(
+                scan_path,
+                output_path,
+                normalizer,
+                orient_only=args.orient_only,
+            )
+            output_paths.append(output_path)
+            print(
+                f"[{index}/{len(scans)}] {relative_path} -> {output_path.relative_to(output_dir)} "
+                f"| rotation_class {result.rotation_index}",
+                flush=True,
+            )
 
     render_contact_sheets(
         output_paths,
@@ -111,6 +148,53 @@ def find_stl_files(root, exclude_dir=None):
             continue
         paths.append(path)
     return sorted(paths)
+
+
+def find_occlusion_pairs(scans):
+    by_patient = {}
+    for scan_path in scans:
+        scan_type = classify_scan(scan_path)
+        if scan_type is None:
+            continue
+        by_patient.setdefault(scan_path.parent, {}).setdefault(scan_type, []).append(scan_path)
+
+    if not by_patient:
+        raise RuntimeError(
+            "--preserve-occlusion requires lower/mandibular and upper/maxillary scans "
+            "in each patient folder"
+        )
+
+    pairs = []
+    invalid = []
+    for patient_dir, named_paths in sorted(by_patient.items()):
+        lower_paths = named_paths.get("lower", [])
+        upper_paths = named_paths.get("upper", [])
+        if len(lower_paths) != 1 or len(upper_paths) != 1:
+            invalid.append(patient_dir)
+            continue
+        pairs.append((patient_dir, lower_paths[0], upper_paths[0]))
+
+    if invalid:
+        formatted = ", ".join(str(path) for path in invalid)
+        raise RuntimeError(
+            "Expected exactly one lower/mandibular scan and one upper/maxillary scan "
+            f"in patient folder(s): {formatted}"
+        )
+
+    return pairs
+
+
+def classify_scan(scan_path):
+    name = scan_path.name.lower()
+    is_lower = "lower" in name or "mandibular" in name
+    is_upper = "upper" in name or "maxillary" in name
+    if is_lower and is_upper:
+        raise RuntimeError(f"Ambiguous lower/upper scan name: {scan_path}")
+    if is_lower:
+        return "lower"
+    if is_upper:
+        return "upper"
+    return None
 
 
 def render_contact_sheets(

@@ -2,6 +2,10 @@
 
 Minimal scan orientation normalizer.
 
+Output orientation reference:
+
+![Output orientation reference](assets/standard_frame.png)
+
 The repository keeps the user-facing single-scan entry point at the root:
 
 ```bash
@@ -16,6 +20,10 @@ Install dependencies:
 pip install -r requirements.txt
 pip install -e .
 ```
+
+Download the pretrained checkpoint from Google Drive and place it at `runs/rotation/best.pt`:
+
+https://drive.google.com/file/d/19SxZbUDqn9iS9_3H6uVtfjNOAFKGzWEX/view?usp=sharing
 
 The training task uses the consistently oriented scans as the canonical frame:
 

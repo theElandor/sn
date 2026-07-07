@@ -12,10 +12,11 @@
 #SBATCH --error=runs/logs/train_%j.err
 
 source /home/mlugli/ScanNormalizer/venv/bin/activate
-python scripts/train.py --data-root data/input \
+python scripts/train.py --data-root data/noisy_scans \
     --sampling fps \
     --points 16384 \
     --epochs 3 \
-    --batch-size 4 \
-    --fold-dir data/splits/fold_2 \
-    --output-dir exp/rotation
+    --batch-size 1 \
+    --fold-dir data/splits/noisy_scans/fold_1\
+    --output-dir exp/rotation \
+    --checkpoint /work/grana_maxillo/Mlugli/models/rotation_model/rotation/20260628_000951/best.pt \

@@ -1,7 +1,9 @@
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
+import debugpy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -26,44 +28,61 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Optional checkpoint to load model weights from before training.",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--sampling", choices=("random", "fps"), default="fps")
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--eval-input-dir", default="data/input")
-    parser.add_argument("--eval-split-file", default=None)
-    parser.add_argument("--eval-gt-json", default="data/gt/ground_truth.json")
-    parser.add_argument("--eval-sampling", choices=("random", "fps"), default="fps")
-    parser.add_argument("--eval-points", type=int, default=None)
-    parser.add_argument("--eval-visualize-count", type=int, default=5)
-    parser.add_argument("--eval-visualize-points", type=int, default=8000)
-    parser.add_argument("--no-eval", action="store_true")
+    parser.add_argument("--test-input-dir", default=None)
+    parser.add_argument("--test-gt-json", default="data/gt/ground_truth.json")
+    parser.add_argument("--test-sampling", choices=("random", "fps"), default="fps")
+    parser.add_argument("--test-points", type=int, default=None)
+    parser.add_argument("--test-visualize-count", type=int, default=5)
+    parser.add_argument("--test-visualize-points", type=int, default=8000)
+    parser.add_argument("--no-test", action="store_true")
     parser.add_argument("--wandb-project", default="ios_orientation")
     parser.add_argument("--wandb-name", default=None)
     parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode with debugpy.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.debug == True:
+        print("Hello")
+        debugpy.listen(("0.0.0.0", 5681))
+        print(">>> Debugger is listening on port 5681. Waiting for client to attach...")
+        debugpy.wait_for_client()
+        print(">>> Debugger attached. Resuming execution.")
     model = RotationNormalizer().to(args.device)
     model_parameters = sum(parameter.numel() for parameter in model.parameters())
     print(f"model parameters {model_parameters:,}", flush=True)
 
     run_dir = create_run_dir(Path(args.output_dir), args.wandb_name)
+    checkpoint_path = load_pretrained_weights(model, args.checkpoint, args.device)
+    save_run_config(run_dir, args, checkpoint_path)
     data_root = Path(args.data_root).expanduser()
     fold_dir = Path(args.fold_dir).expanduser()
 
-    train_files = read_split_files(fold_dir / "train.txt", data_root)
-    val_files = read_split_files(fold_dir / "val.txt", data_root)
-    if not args.no_eval:
-        eval_split_file = Path(args.eval_split_file).expanduser() if args.eval_split_file else fold_dir / "val.txt"
-        args.eval_files = [
-            str(path)
-            for path in read_split_files(
-                eval_split_file,
-                Path(args.eval_input_dir).expanduser(),
-            )
+    data_candidates = discover_stl_files(data_root)
+    train_files = read_split_files(fold_dir / "train.txt", data_candidates)
+    val_files = read_split_files(fold_dir / "val.txt", data_candidates)
+    if not args.no_test:
+        test_split_file = select_test_split_file(fold_dir)
+        test_root = Path(args.test_input_dir).expanduser() if args.test_input_dir else data_root
+        args.test_input_dir = str(test_root)
+        test_candidates = (
+            data_candidates
+            if test_root.resolve() == data_root.resolve()
+            else discover_stl_files(test_root)
+        )
+        args.test_files = [
+            str(path) for path in read_split_files(test_split_file, test_candidates)
         ]
     train_set = ScanDataset(
         data_root,
@@ -80,7 +99,7 @@ def main():
     )
     print(
         f"fold {fold_dir} | train {len(train_set)} | val {len(val_set)} | "
-        f"eval {len(args.eval_files) if not args.no_eval else 0} | "
+        f"test {len(args.test_files) if not args.no_test else 0} | "
         f"sampling {args.sampling} | device {args.device} | run_dir {run_dir}",
         flush=True,
     )
@@ -120,18 +139,18 @@ def main():
         wandb.define_metric("val/mse_loss", step_metric="epoch")
         wandb.define_metric("val/accuracy", step_metric="epoch")
         wandb.define_metric("val/best_loss", step_metric="epoch")
-        wandb.define_metric("eval/geodesic_loss", step_metric="epoch")
+        wandb.define_metric("test/geodesic_loss", step_metric="epoch")
         wandb.watch(model, log="gradients", log_freq=100)
 
-    if not args.no_eval:
-        eval_result = evaluate_current_model(
+    if not args.no_test:
+        test_result = test_current_model(
             model,
             args,
             run_dir,
             epoch=0,
             visualize=not args.no_wandb,
         )
-        log_evaluation(eval_result, epoch=0, use_wandb=not args.no_wandb)
+        log_test(test_result, epoch=0, use_wandb=not args.no_wandb)
 
     train_batch_step = 0
     for epoch in range(1, args.epochs + 1):
@@ -163,15 +182,15 @@ def main():
             flush=True,
         )
 
-        if not args.no_eval:
-            eval_result = evaluate_current_model(
+        if not args.no_test:
+            test_result = test_current_model(
                 model,
                 args,
                 run_dir,
                 epoch,
                 visualize=not args.no_wandb,
             )
-            log_evaluation(eval_result, epoch, use_wandb=not args.no_wandb)
+            log_test(test_result, epoch, use_wandb=not args.no_wandb)
 
         if not args.no_wandb:
             wandb.log(
@@ -225,38 +244,183 @@ def create_run_dir(output_root, run_name=None):
     raise RuntimeError(f"Could not create a unique run directory under {output_root}")
 
 
-def read_split_files(split_path, data_root):
+def load_pretrained_weights(model, checkpoint_path, device):
+    if checkpoint_path is None:
+        return None
+
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    if not checkpoint_path.is_file():
+        raise RuntimeError(f"Missing checkpoint: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = extract_model_weights(checkpoint)
+    model.load_state_dict(state_dict)
+    print(f"loaded pretrained model weights only from {checkpoint_path}", flush=True)
+    return checkpoint_path
+
+
+def extract_model_weights(checkpoint):
+    if isinstance(checkpoint, dict):
+        if "model" in checkpoint:
+            return checkpoint["model"]
+        if "state_dict" in checkpoint:
+            return checkpoint["state_dict"]
+    return checkpoint
+
+
+def save_run_config(run_dir, args, checkpoint_path):
+    config = {
+        "command": sys.argv,
+        "args": vars(args),
+        "pretrained_checkpoint": str(checkpoint_path) if checkpoint_path else None,
+    }
+    (run_dir / "args.json").write_text(json.dumps(config, indent=2) + "\n")
+
+
+def discover_stl_files(root):
+    root = Path(root).expanduser()
+    paths = root.rglob("*")
+    files = sorted(
+        path.resolve()
+        for path in paths
+        if path.is_file() and path.suffix.lower() == ".stl"
+    )
+    if not files:
+        raise RuntimeError(f"No STL files found under {root}")
+    return files
+
+
+def read_split_files(split_path, candidates):
     if not split_path.exists():
         raise RuntimeError(f"Missing split file: {split_path}")
 
     files = []
-    for line in split_path.read_text().splitlines():
+    candidate_text = [path.as_posix().casefold() for path in candidates]
+    for line_number, line in enumerate(split_path.read_text().splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
-        path = Path(line)
-        files.append(path if path.is_absolute() else data_root / path)
+        identifier, arch = parse_split_entry(split_path, line_number, line)
+        if arch is None:
+            files.extend(
+                match_patient_scans(
+                    split_path,
+                    line_number,
+                    identifier,
+                    candidates,
+                    candidate_text,
+                )
+            )
+        else:
+            files.append(
+                match_scan_tuple(
+                    split_path,
+                    line_number,
+                    identifier,
+                    arch,
+                    candidates,
+                    candidate_text,
+                )
+            )
 
     if not files:
         raise RuntimeError(f"Split file is empty: {split_path}")
     return files
 
 
-def evaluate_current_model(model, args, run_dir, epoch, visualize=False):
-    print(f"epoch {epoch:03d} evaluating held-out split...", flush=True)
+def select_test_split_file(fold_dir):
+    test_split = fold_dir / "test.txt"
+    if test_split.exists():
+        return test_split
+    return fold_dir / "val.txt"
+
+
+def parse_split_entry(split_path, line_number, line):
+    parts = line.split()
+    if len(parts) not in (1, 2):
+        raise RuntimeError(
+            f"Invalid split entry at {split_path}:{line_number}: expected "
+            f"'<identifier>' or '<identifier> <arch>', got '{line}'"
+        )
+    if any(Path(part).suffix for part in parts):
+        raise RuntimeError(
+            f"Invalid split entry at {split_path}:{line_number}: split files must use "
+            f"'<identifier>' or '<identifier> <arch>' entries without mesh "
+            f"extensions, got '{line}'"
+        )
+    return parts[0], parts[1] if len(parts) == 2 else None
+
+
+def match_scan_tuple(
+    split_path,
+    line_number,
+    identifier,
+    arch,
+    candidates,
+    candidate_text,
+):
+    tokens = (identifier.casefold(), arch.casefold())
+    matches = [
+        path
+        for path, text in zip(candidates, candidate_text)
+        if all(token in text for token in tokens)
+    ]
+    if not matches:
+        raise RuntimeError(
+            f"No STL file matched split tuple '{identifier} {arch}' "
+            f"from {split_path}:{line_number}"
+        )
+    if len(matches) > 1:
+        formatted = format_matches(matches)
+        raise RuntimeError(
+            f"Split tuple '{identifier} {arch}' from {split_path}:{line_number} "
+            f"matched multiple STL files: {formatted}"
+        )
+    return matches[0]
+
+
+def match_patient_scans(split_path, line_number, identifier, candidates, candidate_text):
+    token = identifier.casefold()
+    matches = [
+        path
+        for path, text in zip(candidates, candidate_text)
+        if token in text and has_lower_or_upper_name(path)
+    ]
+    if not matches:
+        raise RuntimeError(
+            f"No lower/upper STL files matched patient identifier '{identifier}' "
+            f"from {split_path}:{line_number}"
+        )
+    return matches
+
+
+def has_lower_or_upper_name(path):
+    name = path.name.casefold()
+    return "lower" in name or "upper" in name
+
+
+def format_matches(matches):
+    formatted = ", ".join(str(path) for path in matches[:5])
+    if len(matches) > 5:
+        formatted += ", ..."
+    return formatted
+
+
+def test_current_model(model, args, run_dir, epoch, visualize=False):
+    print(f"epoch {epoch:03d} testing held-out split...", flush=True)
     result = run_evaluation(
         model=model,
         device=args.device,
-        input_dir=args.eval_input_dir,
-        gt_json=args.eval_gt_json,
+        input_dir=args.test_input_dir,
+        gt_json=args.test_gt_json,
         predictions_json=run_dir / "json" / "predictions.json",
         epoch=epoch,
-        points=args.eval_points or args.points,
-        sampling=args.eval_sampling,
-        scan_files=args.eval_files,
+        points=args.test_points or args.points,
+        sampling=args.test_sampling,
+        scan_files=args.test_files,
     )
     print(
-        f"epoch {epoch:03d} | eval_geodesic_loss "
+        f"epoch {epoch:03d} | test_geodesic_loss "
         f"{result['mean_geodesic_loss']:.6f} | json {result['json_path']}",
         flush=True,
     )
@@ -264,16 +428,16 @@ def evaluate_current_model(model, args, run_dir, epoch, visualize=False):
     if visualize:
         result["visualizations"] = build_eval_visualizations(
             result["predictions"],
-            args.eval_input_dir,
+            args.test_input_dir,
             run_dir / "html" / f"epoch_{epoch:03d}",
             epoch,
-            worst_count=args.eval_visualize_count,
-            render_points=args.eval_visualize_points,
+            worst_count=args.test_visualize_count,
+            render_points=args.test_visualize_points,
         )
     return result
 
 
-def log_evaluation(result, epoch, use_wandb):
+def log_test(result, epoch, use_wandb):
     if not use_wandb:
         return
 
@@ -284,12 +448,12 @@ def log_evaluation(result, epoch, use_wandb):
     table = wandb.Table(data=rows, columns=["scan_index", "scan", "geodesic_loss"])
     payload = {
         "epoch": epoch,
-        "eval/geodesic_loss": result["mean_geodesic_loss"],
-        "eval/geodesic_values": wandb.plot.line(
+        "test/geodesic_loss": result["mean_geodesic_loss"],
+        "test/geodesic_values": wandb.plot.line(
             table,
             "scan_index",
             "geodesic_loss",
-            title=f"Evaluation Geodesic Losses Epoch {epoch:03d}",
+            title=f"Test Geodesic Losses Epoch {epoch:03d}",
         ),
     }
     for name, path in result.get("visualizations", {}).items():

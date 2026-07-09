@@ -26,10 +26,10 @@ def run_evaluation(
     else:
         scans = sorted(Path(path).expanduser().resolve() for path in scan_files)
     if not scans:
-        raise RuntimeError(f"No evaluation STL files found under {input_dir}")
+        raise RuntimeError(f"No test STL files found under {input_dir}")
     missing = [path for path in scans if not path.is_file()]
     if missing:
-        raise RuntimeError(f"Missing evaluation scan: {missing[0]}")
+        raise RuntimeError(f"Missing test scan: {missing[0]}")
 
     was_training = model.training
     model.eval()
@@ -41,10 +41,10 @@ def run_evaluation(
         for index, scan in enumerate(scans, start=1):
             relative_scan = scan.relative_to(input_dir).as_posix()
             if relative_scan not in gt_by_scan:
-                raise RuntimeError(f"Missing GT rotation for evaluation scan: {relative_scan}")
+                raise RuntimeError(f"Missing GT rotation for test scan: {relative_scan}")
             gt_rotation = gt_by_scan[relative_scan]
             print(
-                f"  eval scan {index}/{len(scans)}: {relative_scan}",
+                f"  test scan {index}/{len(scans)}: {relative_scan}",
                 flush=True,
             )
             result = predict_normalization_matrix(

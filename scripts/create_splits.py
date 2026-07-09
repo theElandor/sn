@@ -1,12 +1,19 @@
 import argparse
 from pathlib import Path
 import random
+import re
 
 
 SEED = 42
 N_FOLDS = 5
 VAL_RATIO = 0.05
 TEST_RATIO = 0.05
+ARCH_TOKENS = {
+    "lower": "lower",
+    "mandibular": "lower",
+    "upper": "upper",
+    "maxillary": "upper",
+}
 
 
 def parse_args():
@@ -25,9 +32,14 @@ def main():
     data_root = args.data_root.expanduser().resolve()
     output_dir = args.output_dir.expanduser()
 
-    samples = sorted(path.name for path in data_root.glob("*.stl"))
+    scans = discover_stl_files(data_root)
+    samples = sorted(
+        identifier
+        for identifier in {patient_id_for_scan(path, data_root) for path in scans}
+        if identifier is not None
+    )
     if not samples:
-        raise RuntimeError(f"No STL files found in {data_root}")
+        raise RuntimeError(f"No lower/upper STL files found under {data_root}")
 
     n_val = max(1, round(len(samples) * args.val_ratio))
     n_test = max(1, round(len(samples) * args.test_ratio))
@@ -53,6 +65,58 @@ def main():
 
 def write_lines(path, lines):
     path.write_text("\n".join(lines) + "\n")
+
+
+def discover_stl_files(root):
+    paths = root.rglob("*")
+    scans = sorted(
+        path for path in paths if path.is_file() and path.suffix.lower() == ".stl"
+    )
+    if not scans:
+        raise RuntimeError(f"No STL files found under {root}")
+    return scans
+
+
+def patient_id_for_scan(scan, data_root):
+    relative = scan.relative_to(data_root)
+    arch = infer_arch(relative)
+    if arch is None:
+        return None
+    return infer_identifier(relative, arch)
+
+
+def infer_arch(relative_path):
+    text = relative_path.as_posix().casefold()
+    for token, arch in ARCH_TOKENS.items():
+        if token in text:
+            return arch
+    return None
+
+
+def infer_identifier(relative_path, arch):
+    parts = relative_path.with_suffix("").parts
+    for part in reversed(parts[:-1]):
+        if not contains_arch_token(part):
+            return part
+
+    stem_tokens = [
+        token
+        for token in re.split(r"[^A-Za-z0-9]+", relative_path.stem)
+        if token and ARCH_TOKENS.get(token.casefold()) != arch
+    ]
+    numeric_tokens = [
+        token for token in stem_tokens if any(char.isdigit() for char in token)
+    ]
+    if numeric_tokens:
+        return numeric_tokens[-1]
+    if stem_tokens:
+        return stem_tokens[-1]
+    raise RuntimeError(f"Could not infer identifier from {relative_path}")
+
+
+def contains_arch_token(text):
+    text = text.casefold()
+    return any(token in text for token in ARCH_TOKENS)
 
 
 if __name__ == "__main__":

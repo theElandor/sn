@@ -1,6 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
+import debugpy
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -18,6 +19,7 @@ def parse_args():
     parser.add_argument("--output-dir", default="data/output")
     parser.add_argument("--points", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode with debugpy.")
     parser.add_argument(
         "--orient-only",
         action="store_true",
@@ -48,6 +50,12 @@ def main():
     args = parse_args()
     if args.orient_only and args.center_and_orient:
         raise RuntimeError("Choose either --orient-only or --center-and-orient")
+    if args.debug == True:
+        print("Hello, happy debugging.")
+        debugpy.listen(("0.0.0.0", 5681))
+        print(">>> Debugger is listening on port 5681. Waiting for client to attach...")
+        debugpy.wait_for_client()
+        print(">>> Debugger attached. Resuming execution.")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

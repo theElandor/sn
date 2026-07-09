@@ -25,8 +25,8 @@ def build_eval_visualizations(
     worst = ranked[:worst_count]
     best = min(predictions, key=lambda item: item["geodesic_loss"])
 
-    worst_path = output_dir / f"eval_worst_epoch_{epoch:03d}.html"
-    best_path = output_dir / f"eval_low_error_epoch_{epoch:03d}.html"
+    worst_path = output_dir / f"test_worst_epoch_{epoch:03d}.html"
+    best_path = output_dir / f"test_low_error_epoch_{epoch:03d}.html"
 
     _write_scan_pairs_html(
         worst,
@@ -44,8 +44,8 @@ def build_eval_visualizations(
     )
 
     return {
-        "eval/worst_rotation_error_scans_3d": worst_path,
-        "eval/low_geodesic_error_scan_3d": best_path,
+        "test/worst_rotation_error_scans_3d": worst_path,
+        "test/low_geodesic_error_scan_3d": best_path,
     }
 
 

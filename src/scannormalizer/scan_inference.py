@@ -114,7 +114,7 @@ def transform_scan(
 ):
     scan_path = Path(scan_path)
     output_path = Path(output_path)
-    mesh = trimesh.load(scan_path, force="mesh", process=False)
+    mesh = trimesh.load_mesh(scan_path, force="mesh")
     vertices = np.asarray(mesh.vertices, dtype=np.float32)
     if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
         raise RuntimeError(f"Could not load vertices from {scan_path}")
@@ -175,7 +175,7 @@ def _run_inference(scan_path, normalizer, input_rotation=None):
 
     normalized_vertices = (points - center) / scale
     pca_vertices = normalized_vertices @ basis
-    matrix = basis @ rotation.T
+    matrix = basis @ rotation
 
     return {
         "mesh": mesh,

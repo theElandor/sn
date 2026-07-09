@@ -52,7 +52,14 @@ def load_normalizer(checkpoint_path, device=None, points=None, sampling="fps"):
     )
 
 
-def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None, orient_only=False):
+def normalize_scan(
+    scan_path,
+    output_path,
+    normalizer,
+    pca_output_path=None,
+    orient_only=False,
+    center_and_orient=False,
+):
     scan_path = Path(scan_path)
     output_path = Path(output_path)
     pca_output_path = Path(pca_output_path) if pca_output_path is not None else None
@@ -69,6 +76,7 @@ def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None, ori
             inference["center"],
             inference["scale"],
             orient_only,
+            center_and_orient,
         ).numpy()
         pca_mesh.export(pca_output_path)
 
@@ -78,6 +86,7 @@ def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None, ori
         inference["center"],
         inference["scale"],
         orient_only,
+        center_and_orient,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.vertices = oriented_vertices.numpy()
@@ -94,7 +103,15 @@ def normalize_scan(scan_path, output_path, normalizer, pca_output_path=None, ori
     )
 
 
-def transform_scan(scan_path, output_path, matrix, center=None, scale=None, orient_only=False):
+def transform_scan(
+    scan_path,
+    output_path,
+    matrix,
+    center=None,
+    scale=None,
+    orient_only=False,
+    center_and_orient=False,
+):
     scan_path = Path(scan_path)
     output_path = Path(output_path)
     mesh = trimesh.load(scan_path, force="mesh", process=False)
@@ -106,7 +123,14 @@ def transform_scan(scan_path, output_path, matrix, center=None, scale=None, orie
     matrix = torch.as_tensor(matrix, dtype=points.dtype)
     center = torch.as_tensor(center, dtype=points.dtype) if center is not None else None
     scale = torch.as_tensor(scale, dtype=points.dtype) if scale is not None else None
-    transformed_vertices = _apply_transform(points, matrix, center, scale, orient_only)
+    transformed_vertices = _apply_transform(
+        points,
+        matrix,
+        center,
+        scale,
+        orient_only,
+        center_and_orient,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.vertices = transformed_vertices.numpy()
@@ -167,9 +191,20 @@ def _run_inference(scan_path, normalizer, input_rotation=None):
     }
 
 
-def _apply_transform(points, matrix, center=None, scale=None, orient_only=False):
+def _apply_transform(
+    points,
+    matrix,
+    center=None,
+    scale=None,
+    orient_only=False,
+    center_and_orient=False,
+):
+    if center_and_orient:
+        if center is None:
+            raise RuntimeError("center is required for center_and_orient=True")
+        return (points - center) @ matrix
     if orient_only:
         return points @ matrix
     if center is None or scale is None:
-        raise RuntimeError("center and scale are required unless orient_only=True")
+        raise RuntimeError("center and scale are required unless orient_only=True or center_and_orient=True")
     return ((points - center) / scale) @ matrix

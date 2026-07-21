@@ -29,6 +29,11 @@ def parse_args():
         help="Apply only the predicted orientation matrix to output scans; do not center or scale them to the unit sphere.",
     )
     parser.add_argument(
+        "--center-and-orient",
+        action="store_true",
+        help="Translate each scan to the origin and apply the orientation matrix without scaling to the unit sphere.",
+    )
+    parser.add_argument(
         "--preserve-occlusion",
         action="store_true",
         help="Infer the transform from each patient lower.stl and apply the same transform to the sibling upper.stl.",
@@ -39,11 +44,18 @@ def parse_args():
     parser.add_argument("--render-points", type=int, default=5000)
     parser.add_argument("--render-faces", type=int, default=10000)
     parser.add_argument("--point-size", type=float, default=2)
+    parser.add_argument(
+        "--save-matrix",
+        action="store_true",
+        help="Save the transformation matrix as a .npy file alongside each transformed scan.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.orient_only and args.center_and_orient:
+        raise RuntimeError("Choose either --orient-only or --center-and-orient")
     input_dir = args.input_dir.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
 
@@ -91,6 +103,7 @@ def main():
                 lower_output_path,
                 normalizer,
                 orient_only=args.orient_only,
+                center_and_orient=args.center_and_orient,
             )
             transform_scan(
                 upper_path,
@@ -99,8 +112,26 @@ def main():
                 center=result.center,
                 scale=result.scale,
                 orient_only=args.orient_only,
+                center_and_orient=args.center_and_orient,
             )
             output_paths.extend([lower_output_path, upper_output_path])
+            if args.save_matrix:
+                save_affine(
+                    result.matrix,
+                    result.center,
+                    result.scale,
+                    lower_output_path,
+                    orient_only=args.orient_only,
+                    center_and_orient=args.center_and_orient,
+                )
+                save_affine(
+                    result.matrix,
+                    result.center,
+                    result.scale,
+                    upper_output_path,
+                    orient_only=args.orient_only,
+                    center_and_orient=args.center_and_orient,
+                )
             print(
                 f"[{index}/{len(pairs)}] {patient_dir.relative_to(input_dir)} lower+upper "
                 f"| rotation_class {result.rotation_index}",
@@ -115,8 +146,18 @@ def main():
                 output_path,
                 normalizer,
                 orient_only=args.orient_only,
+                center_and_orient=args.center_and_orient,
             )
             output_paths.append(output_path)
+            if args.save_matrix:
+                save_affine(
+                    result.matrix,
+                    result.center,
+                    result.scale,
+                    output_path,
+                    orient_only=args.orient_only,
+                    center_and_orient=args.center_and_orient,
+                )
             print(
                 f"[{index}/{len(scans)}] {relative_path} -> {output_path.relative_to(output_dir)} "
                 f"| rotation_class {result.rotation_index}",
@@ -321,6 +362,22 @@ def set_equal_axes(axis, points):
     axis.set_ylabel("Y", color="green")
     axis.set_zlabel("Z", color="blue")
 
+def save_affine(matrix, center, scale, output_scan_path, orient_only=False, center_and_orient=False):
+    matrix = np.asarray(matrix, dtype=np.float32)
+    center = None if center is None else np.asarray(center, dtype=np.float32)
+
+    affine = np.eye(4, dtype=np.float32)
+
+    if orient_only:
+        affine[:3, :3] = matrix.T
+    elif center_and_orient:
+        affine[:3, :3] = matrix.T
+        affine[:3, 3] = -(matrix.T @ center)
+    else:
+        affine[:3, :3] = matrix.T / scale
+        affine[:3, 3] = -(matrix.T @ (center / scale))
+
+    np.save(output_scan_path.with_suffix(".npy"), affine)
 
 def draw_axes(axis, points):
     span = points.max(axis=0) - points.min(axis=0)

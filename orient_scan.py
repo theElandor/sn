@@ -6,6 +6,7 @@ import debugpy
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+import numpy as np
 import torch
 
 from scannormalizer.scan_inference import load_normalizer, normalize_scan, transform_scan
@@ -25,15 +26,30 @@ def parse_args():
         help="Apply only the predicted orientation matrix; do not center or scale the output to the unit sphere.",
     )
     parser.add_argument(
+        "--center-and-orient",
+        action="store_true",
+        help="Translate the scan to the origin and apply the orientation matrix without scaling to the unit sphere.",
+    )
+    parser.add_argument(
         "--preserve-occlusion",
         action="store_true",
         help="Treat the scan argument as a patient folder, or a scan inside one, and transform sibling lower.stl and upper.stl together.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--save-matrix",
+        action="store_true",
+        help="Save the transformation matrix as a .npy file alongside each transformed scan.",
+    )
+    args = parser.parse_args()
+    if args.orient_only and args.center_and_orient:
+        parser.error("choose either --orient-only or --center-and-orient")
+    return args
 
 
 def main():
     args = parse_args()
+    if args.orient_only and args.center_and_orient:
+        raise RuntimeError("Choose either --orient-only or --center-and-orient")
     if args.debug == True:
         print("Hello, happy debugging.")
         debugpy.listen(("0.0.0.0", 5681))
@@ -58,6 +74,7 @@ def main():
             normalizer,
             pca_output_path=pca_output_path,
             orient_only=args.orient_only,
+            center_and_orient=args.center_and_orient,
         )
         transform_scan(
             upper_path,
@@ -66,7 +83,25 @@ def main():
             center=result.center,
             scale=result.scale,
             orient_only=args.orient_only,
+            center_and_orient=args.center_and_orient,
         )
+        if args.save_matrix:
+            save_affine(
+                result.matrix,
+                result.center,
+                result.scale,
+                lower_output_path,
+                orient_only=args.orient_only,
+                center_and_orient=args.center_and_orient,
+            )
+            save_affine(
+                result.matrix,
+                result.center,
+                result.scale,
+                upper_output_path,
+                orient_only=args.orient_only,
+                center_and_orient=args.center_and_orient,
+            )
 
         print(f"rotation logits: {result.logits}")
         print(f"selected rotation index: {result.rotation_index}")
@@ -83,12 +118,40 @@ def main():
         normalizer,
         pca_output_path=pca_output_path,
         orient_only=args.orient_only,
+        center_and_orient=args.center_and_orient,
     )
+    if args.save_matrix:
+        save_affine(
+            result.matrix,
+            result.center,
+            result.scale,
+            output_path,
+            orient_only=args.orient_only,
+            center_and_orient=args.center_and_orient,
+        )
 
     print(f"rotation logits: {result.logits}")
     print(f"selected rotation index: {result.rotation_index}")
     print(f"pca saved: {result.pca_output_path}")
     print(f"saved: {result.output_path}")
+
+
+def save_affine(matrix, center, scale, output_scan_path, orient_only=False, center_and_orient=False):
+    matrix = np.asarray(matrix, dtype=np.float32)
+    center = None if center is None else np.asarray(center, dtype=np.float32)
+
+    affine = np.eye(4, dtype=np.float32)
+
+    if orient_only:
+        affine[:3, :3] = matrix.T
+    elif center_and_orient:
+        affine[:3, :3] = matrix.T
+        affine[:3, 3] = -(matrix.T @ center)
+    else:
+        affine[:3, :3] = matrix.T / scale
+        affine[:3, 3] = -(matrix.T @ (center / scale))
+
+    np.save(output_scan_path.with_suffix(".npy"), affine)
 
 
 def find_patient_scan(patient_dir, scan_type):

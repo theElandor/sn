@@ -5,3 +5,4 @@ trimesh
 numpy
 matplotlib
 wandb
+debugpy

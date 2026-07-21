@@ -36,6 +36,11 @@ def parse_args():
         help="Treat the scan argument as a patient folder, or a scan inside one, and transform sibling lower.stl and upper.stl together.",
     )
     parser.add_argument(
+        "--export-pca",
+        action="store_true",
+        help="Export a PCA-aligned version of the scan alongside the oriented scan.",
+    )
+    parser.add_argument(
         "--save-matrix",
         action="store_true",
         help="Save the transformation matrix as a .npy file alongside each transformed scan.",
@@ -67,7 +72,10 @@ def main():
         upper_path = find_patient_scan(patient_dir, "upper")
         lower_output_path = output_dir / f"{lower_path.stem}_oriented{lower_path.suffix}"
         upper_output_path = output_dir / f"{upper_path.stem}_oriented{upper_path.suffix}"
-        pca_output_path = output_dir / f"{lower_path.stem}_pca{lower_path.suffix}"
+        if args.export_pca:
+            pca_output_path = output_dir / f"{lower_path.stem}_pca{lower_path.suffix}"
+        else:
+            pca_output_path = None
         result = normalize_scan(
             lower_path,
             lower_output_path,

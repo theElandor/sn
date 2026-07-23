@@ -1,6 +1,10 @@
 import argparse
 import math
+import os
 import sys
+import time
+from functools import partial
+from multiprocessing import get_context
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +15,81 @@ import torch
 import trimesh
 
 from scannormalizer.scan_inference import load_normalizer, normalize_scan, transform_scan
+
+MAX_WORKERS = 12
+
+_worker_normalizer = None
+
+
+def _init_worker(checkpoint, device, points, sampling):
+    global _worker_normalizer
+    torch.set_num_threads(1)
+    _worker_normalizer = load_normalizer(
+        checkpoint, device=device, points=points, sampling=sampling
+    )
+
+
+def _process_scan_task(task, orient_only, center_and_orient, save_matrix):
+    scan_path, output_path = task
+    start = time.perf_counter()
+    result = normalize_scan(
+        scan_path,
+        output_path,
+        _worker_normalizer,
+        orient_only=orient_only,
+        center_and_orient=center_and_orient,
+    )
+    if save_matrix:
+        save_affine(
+            result.matrix,
+            result.center,
+            result.scale,
+            output_path,
+            orient_only=orient_only,
+            center_and_orient=center_and_orient,
+        )
+    elapsed = time.perf_counter() - start
+    return output_path, result.rotation_index, elapsed
+
+
+def _process_pair_task(task, orient_only, center_and_orient, save_matrix):
+    patient_dir, lower_path, upper_path, lower_output_path, upper_output_path = task
+    start = time.perf_counter()
+    result = normalize_scan(
+        lower_path,
+        lower_output_path,
+        _worker_normalizer,
+        orient_only=orient_only,
+        center_and_orient=center_and_orient,
+    )
+    transform_scan(
+        upper_path,
+        upper_output_path,
+        result.matrix,
+        center=result.center,
+        scale=result.scale,
+        orient_only=orient_only,
+        center_and_orient=center_and_orient,
+    )
+    if save_matrix:
+        save_affine(
+            result.matrix,
+            result.center,
+            result.scale,
+            lower_output_path,
+            orient_only=orient_only,
+            center_and_orient=center_and_orient,
+        )
+        save_affine(
+            result.matrix,
+            result.center,
+            result.scale,
+            upper_output_path,
+            orient_only=orient_only,
+            center_and_orient=center_and_orient,
+        )
+    elapsed = time.perf_counter() - start
+    return patient_dir, lower_output_path, upper_output_path, result.rotation_index, elapsed
 
 
 def parse_args():
@@ -39,6 +118,11 @@ def parse_args():
         help="Infer the transform from each patient lower.stl and apply the same transform to the sibling upper.stl.",
     )
     parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render QA contact sheets after orienting scans. Disabled by default.",
+    )
     parser.add_argument("--plots-per-image", type=int, default=40)
     parser.add_argument("--render-mode", choices=("surface", "points"), default="points")
     parser.add_argument("--render-points", type=int, default=5000)
@@ -48,6 +132,12 @@ def parse_args():
         "--save-matrix",
         action="store_true",
         help="Save the transformation matrix as a .npy file alongside each transformed scan.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=f"Number of parallel worker processes (capped at {MAX_WORKERS}). Defaults to all available cores, up to the cap.",
     )
     return parser.parse_args()
 
@@ -60,6 +150,7 @@ def main():
     output_dir = args.output_dir.expanduser().resolve()
 
     if args.plot_only:
+        qa_start = time.perf_counter()
         output_paths = find_stl_files(output_dir, exclude_dir=output_dir / "qa")
         if not output_paths:
             raise RuntimeError(f"No oriented STL scans found under {output_dir}")
@@ -73,7 +164,8 @@ def main():
             args.render_mode,
             args.point_size,
         )
-        print(f"QA images saved under {output_dir / 'qa'}", flush=True)
+        qa_elapsed = time.perf_counter() - qa_start
+        print(f"QA images saved under {output_dir / 'qa'} ({qa_elapsed:.1f}s)", flush=True)
         return
 
     if args.checkpoint is None:
@@ -83,99 +175,82 @@ def main():
     if not scans:
         raise RuntimeError(f"No STL scans found under {input_dir}")
 
-    normalizer = load_normalizer(
-        args.checkpoint,
-        device=args.device,
-        points=args.points,
-        sampling=args.sampling,
-    )
+    available_cores = os.cpu_count() or 1
+    requested_workers = args.workers if args.workers is not None else MAX_WORKERS
+    workers = max(1, min(requested_workers, available_cores, MAX_WORKERS))
 
     output_paths = []
+    init_args = (args.checkpoint, args.device, args.points, args.sampling)
+    context = get_context("spawn")
+    processing_start = time.perf_counter()
+
     if args.preserve_occlusion:
         pairs = find_occlusion_pairs(scans)
-        for index, (patient_dir, lower_path, upper_path) in enumerate(pairs, start=1):
-            lower_relative_path = lower_path.relative_to(input_dir)
-            upper_relative_path = upper_path.relative_to(input_dir)
-            lower_output_path = output_dir / lower_relative_path
-            upper_output_path = output_dir / upper_relative_path
-            result = normalize_scan(
-                lower_path,
-                lower_output_path,
-                normalizer,
-                orient_only=args.orient_only,
-                center_and_orient=args.center_and_orient,
-            )
-            transform_scan(
-                upper_path,
-                upper_output_path,
-                result.matrix,
-                center=result.center,
-                scale=result.scale,
-                orient_only=args.orient_only,
-                center_and_orient=args.center_and_orient,
-            )
-            output_paths.extend([lower_output_path, upper_output_path])
-            if args.save_matrix:
-                save_affine(
-                    result.matrix,
-                    result.center,
-                    result.scale,
-                    lower_output_path,
-                    orient_only=args.orient_only,
-                    center_and_orient=args.center_and_orient,
-                )
-                save_affine(
-                    result.matrix,
-                    result.center,
-                    result.scale,
-                    upper_output_path,
-                    orient_only=args.orient_only,
-                    center_and_orient=args.center_and_orient,
-                )
-            print(
-                f"[{index}/{len(pairs)}] {patient_dir.relative_to(input_dir)} lower+upper "
-                f"| rotation_class {result.rotation_index}",
-                flush=True,
-            )
-    else:
-        for index, scan_path in enumerate(scans, start=1):
-            relative_path = scan_path.relative_to(input_dir)
-            output_path = output_dir / relative_path
-            result = normalize_scan(
-                scan_path,
-                output_path,
-                normalizer,
-                orient_only=args.orient_only,
-                center_and_orient=args.center_and_orient,
-            )
-            output_paths.append(output_path)
-            if args.save_matrix:
-                save_affine(
-                    result.matrix,
-                    result.center,
-                    result.scale,
-                    output_path,
-                    orient_only=args.orient_only,
-                    center_and_orient=args.center_and_orient,
-                )
-            print(
-                f"[{index}/{len(scans)}] {relative_path} -> {output_path.relative_to(output_dir)} "
-                f"| rotation_class {result.rotation_index}",
-                flush=True,
-            )
+        tasks = []
+        for patient_dir, lower_path, upper_path in pairs:
+            lower_output_path = output_dir / lower_path.relative_to(input_dir)
+            upper_output_path = output_dir / upper_path.relative_to(input_dir)
+            tasks.append((patient_dir, lower_path, upper_path, lower_output_path, upper_output_path))
 
-    render_contact_sheets(
-        output_paths,
-        output_dir / "qa",
-        output_dir,
-        args.plots_per_image,
-        args.render_points,
-        args.render_faces,
-        args.render_mode,
-        args.point_size,
-    )
+        worker_fn = partial(
+            _process_pair_task,
+            orient_only=args.orient_only,
+            center_and_orient=args.center_and_orient,
+            save_matrix=args.save_matrix,
+        )
+        with context.Pool(processes=workers, initializer=_init_worker, initargs=init_args) as pool:
+            for index, (patient_dir, lower_output_path, upper_output_path, rotation_index, elapsed) in enumerate(
+                pool.imap(worker_fn, tasks), start=1
+            ):
+                output_paths.extend([lower_output_path, upper_output_path])
+                print(
+                    f"[{index}/{len(pairs)}] {patient_dir.relative_to(input_dir)} lower+upper "
+                    f"| rotation_class {rotation_index} | {elapsed:.2f}s",
+                    flush=True,
+                )
+    else:
+        tasks = [(scan_path, output_dir / scan_path.relative_to(input_dir)) for scan_path in scans]
+
+        worker_fn = partial(
+            _process_scan_task,
+            orient_only=args.orient_only,
+            center_and_orient=args.center_and_orient,
+            save_matrix=args.save_matrix,
+        )
+        with context.Pool(processes=workers, initializer=_init_worker, initargs=init_args) as pool:
+            for index, (output_path, rotation_index, elapsed) in enumerate(pool.imap(worker_fn, tasks), start=1):
+                output_paths.append(output_path)
+                print(
+                    f"[{index}/{len(scans)}] {output_path.relative_to(output_dir)} "
+                    f"| rotation_class {rotation_index} | {elapsed:.2f}s",
+                    flush=True,
+                )
+
+    processing_elapsed = time.perf_counter() - processing_start
+
+    qa_elapsed = 0.0
+    if args.render:
+        qa_start = time.perf_counter()
+        render_contact_sheets(
+            output_paths,
+            output_dir / "qa",
+            output_dir,
+            args.plots_per_image,
+            args.render_points,
+            args.render_faces,
+            args.render_mode,
+            args.point_size,
+        )
+        qa_elapsed = time.perf_counter() - qa_start
+
     print(f"oriented {len(output_paths)} scans into {output_dir}", flush=True)
-    print(f"QA images saved under {output_dir / 'qa'}", flush=True)
+    print(
+        f"processing took {processing_elapsed:.1f}s with {workers} worker(s), "
+        f"QA rendering took {qa_elapsed:.1f}s, total {processing_elapsed + qa_elapsed:.1f}s",
+        flush=True,
+    )
+    if args.render:
+        print(f"QA images saved under {output_dir / 'qa'}", flush=True)
 
 
 def find_stl_files(root, exclude_dir=None):
